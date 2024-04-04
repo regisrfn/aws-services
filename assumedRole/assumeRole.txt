@@ -10,3 +10,13 @@ export AWS_SESSION_TOKEN=$(echo "$assume_role_output" | jq -r .Credentials.Sessi
 
 # Retrieve the secret using the assumed role credentials
 aws secretsmanager get-secret-value --secret-id SECRET_ID
+
+# Retrieve the secret value from AWS Secrets Manager
+secret_output=$(aws secretsmanager get-secret-value --secret-id YOUR_SECRET_ID)
+
+# Parse the JSON output to extract the password value
+password=$(echo "$secret_output" | jq -r '.SecretString | fromjson | .password')
+
+# Print the password value
+echo "$password"
+

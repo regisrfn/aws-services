@@ -1,1 +1,6 @@
 aws sts assume-role --role-arn arn:aws:iam::123456789012:role/role-name --role-session-name "MySession" --profile myprofile
+
+aws sts assume-role --role-arn arn:aws:iam::ACCOUNT_ID:role/ROLE_NAME --role-session-name SESSION_NAME && \
+export AWS_ACCESS_KEY_ID=$(aws configure get access_key) && \
+export AWS_SECRET_ACCESS_KEY=$(aws configure get secret_key) && \
+export AWS_SESSION_TOKEN=$(aws configure get session_token) && \

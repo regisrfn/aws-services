@@ -12,9 +12,6 @@ paths:
           application/json:
             schema:
               type: object
-              properties:
-                camelCaseAttribute:
-                  type: string
       responses:
         '200':
           description: OK
@@ -33,4 +30,11 @@ paths:
       x-amazon-apigateway-request-parameters:
         method.request.body:
           mapping: 
-            camelCaseAttribute: $util.escapeJavaScript("$input.json('$.camelCaseAttribute')")
+            # Start of the VTL template
+            # Define the input payload as a VTL variable
+            # Parse the JSON input
+            # Iterate over each key-value pair in the input payload
+            # Convert camelCase to snake_case
+            # Build the transformed payload
+            # End of the VTL template
+            application/json: !include mapping.vtl

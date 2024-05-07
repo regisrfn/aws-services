@@ -1,0 +1,8 @@
+            #set($inputRoot = $input.path('$'))
+            #set($newPayload = {})
+            #foreach($key in $inputRoot.keySet())
+              #set($newKey = $util.camelCaseToSnakeCase($key))
+              #set($value = $inputRoot.get($key))
+              $util.qr($newPayload.put($newKey, $value))
+            #end
+            $util.toJson($newPayload)

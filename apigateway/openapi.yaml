@@ -1,0 +1,36 @@
+openapi: 3.0.0
+info:
+  title: AWS API Gateway with CamelCase to SnakeCase Transformation
+  version: 1.0.0
+paths:
+  /example:
+    post:
+      summary: Example POST endpoint
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                camelCaseAttribute:
+                  type: string
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+      x-amazon-apigateway-integration:
+        uri: arn:aws:apigateway:REGION:lambda:path/2015-03-31/functions/arn:aws:lambda:REGION:ACCOUNT_ID:function:FUNCTION_NAME/invocations
+        passthroughBehavior: when_no_match
+        httpMethod: POST
+        type: aws_proxy
+      x-amazon-apigateway-request-parameters:
+        method.request.body:
+          mapping: 
+            camelCaseAttribute: $util.escapeJavaScript("$input.json('$.camelCaseAttribute')")

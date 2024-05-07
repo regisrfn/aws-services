@@ -1,0 +1,32 @@
+Resources:
+  MyApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: MyApi
+
+  MyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref MyApiGateway
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: arn:aws:apigateway:region:lambda:path/2015-03-31/functions/arn:aws:lambda:region:account-id:function:MyLambdaFunction/invocations
+        PassthroughBehavior: WHEN_NO_TEMPLATES
+        ContentHandling: CONVERT_TO_TEXT
+        RequestTemplates:
+          application/json: !Sub
+            - |
+              #set($inputRoot = $input.path('$'))
+              {
+                "body": {
+                  #foreach($key in $inputRoot.keySet())
+                    #set($camelCaseKey = $util.camelCase($key))
+                    "$camelCaseKey": "$util.escapeJavaScript($inputRoot.get($key))"
+                    #if($foreach.hasNext),#end
+                  #end
+                }
+              }
+            - {}

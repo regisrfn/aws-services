@@ -1,38 +1,39 @@
-x-amazon-apigateway-integration:
-  credentials: "arn:aws:iam::${iupipes_deploy_aws_env_account}:role/iamsr/"
-  uri: "arn:aws:apigateway:${region}:states:action/StartExecution"
-  timeoutInMillis: 14000
-  type: aws
-  httpMethod: POST
-  requestParameters:
-    integration.request.header.Content-Type: "'application/x-amz-json-1.0'"
-  requestTemplates:
-    application/json: |
-      #set($inputRoot = $input.path('$'))
-      #if($inputRoot.dataProcessamento)
-        #set($dataProcessamento = $inputRoot.dataProcessamento)
-      #else
-        #set($dataProcessamento = $inputRoot.data_processamento)
-      #end
-      #if($inputRoot.dataArquivo)
-        #set($dataArquivo = $inputRoot.dataArquivo)
-      #else
-        #set($dataArquivo = $inputRoot.data_arquivo)
-      #end
-      #if($inputRoot.executionName)
-        #set($executionName = $inputRoot.executionName)
-      #else
-        #set($executionName = $inputRoot.execution_name)
-      #end
-      {
-        "stateMachineArn": "arn:aws:states:${region}:${iupipes_deploy_aws_env_account}:stateMachine:consolidar-clientes",
-        "name": "$executionName",
-        "input": "{\"data_processamento\": \"$dataProcessamento\", \"data_arquivo\": \"$dataArquivo\"}"
-      }
-  responses:
-    default:
-      statusCode: '201'
-      responseParameters:
-        method.response.header.Access-Control-Allow-Headers: "'*'"
-        method.response.header.Access-Control-Allow-Methods: "'*'"
-        method.response.header.Access-Control-Allow-Origin: "'*'"
+paths:
+  /consolidacao-clientes:
+    post:
+      x-amazon-apigateway-integration:
+        requestParameters:
+        requestTemplates:
+          application/json: |
+            #set($inputRoot = $input.path('$'))
+            
+            # Check for snake_case and camelCase for dataProcessamento
+            #set($dataProcessamento = "")
+            #if($inputRoot.data_processamento)
+              #set($dataProcessamento = $inputRoot.data_processamento)
+            #elseif($inputRoot.dataProcessamento)
+              #set($dataProcessamento = $inputRoot.dataProcessamento)
+            #end
+            
+            # Check for snake_case and camelCase for dataArquivo
+            #set($dataArquivo = "")
+            #if($inputRoot.data_arquivo)
+              #set($dataArquivo = $inputRoot.data_arquivo)
+            #elseif($inputRoot.dataArquivo)
+              #set($dataArquivo = $inputRoot.dataArquivo)
+            #end
+            
+            # Set executionName using dataProcessamento and requestId
+            #set($executionName = $dataProcessamento + '-' + $context.requestId)
+            # Set stateMachineArn using the environment account
+            #set($stateMachineArn = 'arn:aws:states:sa-east-1:${juipes_deploy_aws_env_account}:stateMachine:consolidador-clientes')
+            {
+              "stateMachineArn": "$stateMachineArn",
+              "name": "$executionName",
+              "input": "{\"data_processamento\":\"$dataProcessamento\",\"data_arquivo\":\"$dataArquivo\"}"
+            }
+      responses:
+        default:
+          statusCode: "201"
+          responseParameters:
+            method.response.header.Access-Control-Allow-Origin: "'*'"

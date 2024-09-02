@@ -16,8 +16,21 @@ resource "aws_sns_topic" "batch_failure_topic" {
 
 
 resource "aws_cloudwatch_event_target" "send_to_sns" {
-  rule = aws_cloudwatch_event_rule.batch_job_failure_rule.name
-  arn  = aws_sns_topic.batch_failure_topic.arn
+  rule      = aws_cloudwatch_event_rule.batch_job_failure_rule.name
+  arn       = aws_sns_topic.batch_failure_topic.arn
+
+  input_transformer {
+    input_paths = {
+      jobName = "$.detail.jobName"
+      jobId   = "$.detail.jobId"
+    }
+
+    input_template = jsonencode({
+      data = {
+        message = "Job <jobName> with ID <jobId> has failed."
+      }
+    })
+  }
 }
 
 resource "aws_sns_topic_policy" "batch_failure_topic_policy" {

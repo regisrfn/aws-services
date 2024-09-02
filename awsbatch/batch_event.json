@@ -1,0 +1,55 @@
+{
+    "version": "0",
+    "id": "abcdef12-3456-7890-abcd-ef1234567890",
+    "detail-type": "Batch Job State Change",
+    "source": "aws.batch",
+    "account": "123456789012",
+    "time": "2024-08-30T12:34:56Z",
+    "region": "us-west-2",
+    "resources": [
+      "arn:aws:batch:us-west-2:123456789012:job/abcdef12-3456-7890-abcd-ef1234567890"
+    ],
+    "detail": {
+      "jobName": "example-job",
+      "jobId": "abcdef12-3456-7890-abcd-ef1234567890",
+      "jobQueue": "example-job-queue",
+      "status": "FAILED",
+      "attempts": [
+        {
+          "container": {
+            "containerInstanceArn": "arn:aws:ecs:us-west-2:123456789012:container-instance/abcdef12-3456-7890-abcd-ef1234567890",
+            "taskArn": "arn:aws:ecs:us-west-2:123456789012:task/abcdef12-3456-7890-abcd-ef1234567890",
+            "exitCode": 1,
+            "reason": "CannotPullContainerError: failed to resolve image name",
+            "logStreamName": "log-group-name/log-stream-name"
+          },
+          "startedAt": 1628179234000,
+          "stoppedAt": 1628179534000,
+          "statusReason": "Essential container in task exited"
+        }
+      ],
+      "createdAt": 1628178934000,
+      "startedAt": 1628179234000,
+      "stoppedAt": 1628179534000,
+      "dependsOn": [],
+      "jobDefinition": "arn:aws:batch:us-west-2:123456789012:job-definition/example-job-definition:1",
+      "parameters": {},
+      "retryStrategy": {
+        "attempts": 1
+      },
+      "container": {
+        "image": "my-docker-image:latest",
+        "vcpus": 2,
+        "memory": 4096,
+        "command": [
+          "echo",
+          "Hello, World!"
+        ],
+        "volumes": [],
+        "environment": [],
+        "mountPoints": [],
+        "ulimits": []
+      }
+    }
+  }
+  

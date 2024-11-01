@@ -132,16 +132,21 @@ resource "aws_cloudwatch_log_group" "batch_log_group" {
 resource "null_resource" "tag_ecs_cluster" {
   provisioner "local-exec" {
     command = <<EOT
-      # Get the ECS cluster ARN that contains the compute environment name
-      cluster_arn=$(aws ecs list-clusters --query "clusterArns[?contains(@, '${aws_batch_compute_environment.batch_compute_env.compute_environment_name}')]" --output text)
-      
-      # Check if the cluster ARN was found and tag it
+      # Define the search string for the cluster name
+      search_string="example-compute-environment"
+
+      # Retrieve the cluster ARN containing the search string
+      cluster_arn=$(aws ecs list-clusters --query "clusterArns[?contains(@, '$search_string')]" --output text)
+
+      # Check if a cluster was found, then apply tags
       if [ -n "$cluster_arn" ]; then
         aws ecs tag-resource --resource-arn $cluster_arn --tags Key=Environment,Value=production Key=Project,Value=batch-processing
+        echo "Tagged ECS cluster: $cluster_arn"
       else
-        echo "No matching ECS cluster found for ${aws_batch_compute_environment.batch_compute_env.compute_environment_name}"
+        echo "No matching ECS cluster found for search string: $search_string"
         exit 1
       fi
     EOT
   }
 }
+

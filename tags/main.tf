@@ -33,9 +33,10 @@ resource "null_resource" "tag_security_groups" {
 
   provisioner "local-exec" {
     command = <<EOT
+      set -e
       aws ec2 create-tags --resources ${each.value.id} --tags '[
         ${join(",", [for k, v in var.new_tags : "{\"key\": \"${k}\", \"value\": \"${v}\"}"])}
-      ]'
+      ]' || echo "Failed to tag security group ${each.value.id}, continuing with other groups."
     EOT
   }
 

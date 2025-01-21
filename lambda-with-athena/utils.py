@@ -1,25 +1,38 @@
+
+import pandas as pd
+from aws_lambda_powertools import Logger
+
+logger = Logger(service="AthenaUtils")
+
 class AthenaUtils:
     @staticmethod
-    def transform_results_to_dict(rows: list) -> list:
+    def transform_results_to_dataframe(rows: list) -> pd.DataFrame:
         """
-        Transform Athena query results into a list of dictionaries.
+        Transform Athena query results into a Pandas DataFrame.
 
         Args:
             rows (list): ResultSet rows from Athena query.
 
         Returns:
-            list: List of dictionaries where keys are column names and values are row data.
+            pd.DataFrame: DataFrame containing query results.
         """
         if not rows or len(rows) < 2:
-            return []
+            logger.info("No rows found or insufficient rows to create DataFrame.")
+            return pd.DataFrame()
 
         # Extract headers from the first row
         headers = [col.get('VarCharValue', None) for col in rows[0]['Data']]
+        logger.info(f"Extracted headers: {headers}")
 
-        # Transform remaining rows into dictionaries
-        results = []
-        for row in rows[1:]:  # Skip header row
-            record = {headers[i]: col.get('VarCharValue', None) for i, col in enumerate(row['Data'])}
-            results.append(record)
+        # Extract data rows
+        data = [
+            [col.get('VarCharValue', None) for col in row['Data']]
+            for row in rows[1:]  # Skip the header row
+        ]
+        logger.info(f"Extracted data rows: {data[:5]} (showing up to 5 rows)")
 
-        return results
+        # Create DataFrame
+        df = pd.DataFrame(data, columns=headers)
+        logger.info(f"Created DataFrame with shape: {df.shape}")
+
+        return df

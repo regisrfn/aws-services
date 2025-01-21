@@ -1,6 +1,6 @@
-
 import boto3
 from botocore.exceptions import ClientError
+from utils import AthenaUtils
 
 class AthenaRepository:
     def __init__(self):
@@ -41,9 +41,5 @@ class AthenaRepository:
         paginator = self.athena_client.get_query_results(QueryExecutionId=query_execution_id)
         rows = paginator['ResultSet']['Rows']
 
-        header = [col['VarCharValue'] for col in rows[0]['Data']]
-        results = [
-            {header[i]: row['Data'][i].get('VarCharValue', None) for i in range(len(row['Data']))}
-            for row in rows[1:]  # Ignorar cabeçalho
-        ]
-        return results
+        # Use utility class to transform results
+        return AthenaUtils.transform_results_to_dict(rows)

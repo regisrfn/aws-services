@@ -1,6 +1,7 @@
 
 from repository import AthenaRepository
 from models import QueryPayload
+from constants import QUERY_TEMPLATE
 from datetime import datetime
 
 class QueryService:
@@ -8,12 +9,14 @@ class QueryService:
         self.athena_repository = AthenaRepository()
 
     def execute_query(self, payload: QueryPayload):
-        query = f"""SELECT * FROM tb_detalhamento_spec
-        WHERE data_hor_incu_rgto BETWEEN '{payload.data_inicio}' AND '{payload.data_fim}'
-        AND cnpj_base_participante = '{payload.cnpj_base_participante}'
-        AND agencia = '{payload.agencia}'
-        AND conta = '{payload.conta}'
-        AND tipo_pessoa = '{payload.tipo_pessoa}';"""
+        query = QUERY_TEMPLATE.format(
+            data_inicio=payload.data_inicio,
+            data_fim=payload.data_fim,
+            cnpj_base_participante=payload.cnpj_base_participante,
+            agencia=payload.agencia,
+            conta=payload.conta,
+            tipo_pessoa=payload.tipo_pessoa
+        )
         print("Generated Query:", query)
         query_execution_id = self.athena_repository.execute_query(query)
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")

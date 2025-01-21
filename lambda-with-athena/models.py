@@ -1,26 +1,19 @@
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
+from typing import Literal
 
 class QueryPayload(BaseModel):
-    tipo_arquivo: str
+    tipo_arquivo: Literal['json', 'csv']
     numero_documento: str
     data_inicio: str
     data_fim: str
     cnpj_base_participante: str
     agencia: str
     conta: str
-    tipo_pessoa: str
+    tipo_pessoa: Literal['fisica', 'juridica']
 
-    class Config:
-        schema_extra = {
-            "example": {
-                "tipo_arquivo": "example_type",
-                "numero_documento": "123456789",
-                "data_inicio": "2023-01-01",
-                "data_fim": "2023-01-31",
-                "cnpj_base_participante": "12345678000195",
-                "agencia": "1234",
-                "conta": "56789-0",
-                "tipo_pessoa": "fisica"
-            }
-        }
+    model_config = ConfigDict(
+        str_max_length=100,
+        validate_assignment=True,
+        use_enum_values=True
+    )

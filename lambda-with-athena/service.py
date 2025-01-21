@@ -1,5 +1,6 @@
 
 from repository import AthenaRepository
+from s3_service import S3Service
 from models import QueryPayload
 from constants import QUERY_TEMPLATE
 from datetime import datetime
@@ -7,6 +8,7 @@ from datetime import datetime
 class QueryService:
     def __init__(self):
         self.athena_repository = AthenaRepository()
+        self.s3_service = S3Service()
 
     def execute_query(self, payload: QueryPayload):
         query = QUERY_TEMPLATE.format(
@@ -17,8 +19,16 @@ class QueryService:
             conta=payload.conta,
             tipo_pessoa=payload.tipo_pessoa
         )
-        print("Generated Query:", query)
-        query_execution_id = self.athena_repository.execute_query(query)
+        print("Consulta gerada:", query)
+
+        query_execution_id, results = self.athena_repository.execute_and_fetch_results(query)
+
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
         file_name = f"{payload.tipo_arquivo}_{timestamp}.json"
-        return {'query_execution_id': query_execution_id, 'file_name': file_name}
+
+        s3_path = self.s3_service.save_results_to_s3(results, file_name)
+
+        return {
+            'query_execution_id': query_execution_id,
+            's3_path': s3_path
+        }

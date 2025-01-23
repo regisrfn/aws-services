@@ -29,5 +29,4 @@ class AthenaRepository:
         rows = response['ResultSet']['Rows']
         columns = [col['VarCharValue'] for col in rows[0]['Data']]
         data = [[cell.get('VarCharValue', None) for cell in row['Data']] for row in rows[1:]]
-        df = pd.DataFrame(data, columns=columns)
-        return df
+        return pd.DataFrame(data, columns=columns)

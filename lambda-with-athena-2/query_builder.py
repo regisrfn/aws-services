@@ -8,6 +8,7 @@ class QueryBuilder:
         missing_fields = [field for field in Constants.REQUIRED_FIELDS if field not in payload]
         if missing_fields:
             raise ValueError(f"Campos obrigatórios ausentes: {', '.join(missing_fields)}")
+        
         where_clauses = []
         if payload.get("tipo_arquivo"):
             where_clauses.append(f"tipo_arquivo = '{payload['tipo_arquivo']}'")
@@ -21,6 +22,7 @@ class QueryBuilder:
             where_clauses.append(f"agencia = '{payload['agencia']}' AND conta = '{payload['conta']}'")
         if payload.get("tipo_pessoa"):
             where_clauses.append(f"tipo_pessoa = '{payload['tipo_pessoa']}'")
+
         where_clause = " AND ".join(where_clauses)
         query = f"""
         SELECT * 

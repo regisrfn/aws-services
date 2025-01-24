@@ -6,10 +6,10 @@ from typing import Dict, Any, Optional
 from datetime import datetime
 
 # Configurações iniciais
-ATHENA_DATABASE = os.getenv("ATHENA_DATABASE")
-ATHENA_TABLE = os.getenv("ATHENA_TABLE")
-S3_BUCKET = os.getenv("S3_BUCKET")
-S3_PREFIX = os.getenv("S3_PREFIX")
+ATHENA_DATABASE = os.getenv("ATHENA_DATABASE", "default_database")
+ATHENA_TABLE = os.getenv("ATHENA_TABLE", "tb_detalhamento_spec")
+S3_BUCKET = os.getenv("S3_BUCKET", "ccsrelacionamentocliente-detalhamento-dev")
+S3_PREFIX = os.getenv("S3_PREFIX", "athena_results")
 
 # Modelo de Payload usando Pydantic
 class PayloadModel(BaseModel):
@@ -22,7 +22,7 @@ class PayloadModel(BaseModel):
     data_fim: Optional[str]
     tipo_pessoa: Optional[str]
 
-    @validator("data_inicio", "data_fim", pre=True, always=True)
+    @validator("data_inicio", "data_fim", pre=True, always=True, allow_reuse=True)
     def validate_dates(cls, value):
         if not value or value.strip() == "":
             return None
@@ -31,7 +31,7 @@ class PayloadModel(BaseModel):
         except ValueError:
             raise ValueError(f"Invalid date format for {value}. Expected format: YYYY-MM-DD")
 
-    @validator("tipo_arquivo", "numero_documento", "tipo_pessoa", pre=True, always=True)
+    @validator("tipo_arquivo", "numero_documento", "tipo_pessoa", pre=True, always=True, allow_reuse=True)
     def empty_string_to_none(cls, value):
         return None if not value or value.strip() == "" else value
 
@@ -50,9 +50,26 @@ class QueryBuilder:
 
     def build(self) -> str:
         if not self.conditions:
-            return f"SELECT * FROM {self.table}"
-        conditions_str = " AND ".join(self.conditions)
-        return f"SELECT * FROM {self.table} WHERE {conditions_str}"
+            where_clause = ""
+        else:
+            where_clause = f"WHERE {' AND '.join(self.conditions)}"
+
+        ranked_query = f"""
+        WITH ranked_data AS (
+            SELECT
+                *,
+                ROW_NUMBER() OVER (
+                    PARTITION BY cnpj_base_participante, agencia, conta
+                    ORDER BY data_processamento_glue_job DESC
+                ) AS row_num
+            FROM {self.table}
+            {where_clause}
+        )
+        SELECT *
+        FROM ranked_data
+        WHERE row_num = 1
+        """
+        return ranked_query
 
     def from_payload(self, payload: PayloadModel) -> str:
         if payload.cnpj_base_participante:

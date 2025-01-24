@@ -1,6 +1,4 @@
 import boto3
-import pandas as pd
-import time
 
 class AthenaRepository:
     def __init__(self, database: str, output_bucket: str):
@@ -23,10 +21,3 @@ class AthenaRepository:
             if status in ['SUCCEEDED', 'FAILED', 'CANCELLED']:
                 return status
             time.sleep(2)
-
-    def get_query_results_as_dataframe(self, query_execution_id: str) -> pd.DataFrame:
-        response = self.client.get_query_results(QueryExecutionId=query_execution_id)
-        rows = response['ResultSet']['Rows']
-        columns = [col['VarCharValue'] for col in rows[0]['Data']]
-        data = [[cell.get('VarCharValue', None) for cell in row['Data']] for row in rows[1:]]
-        return pd.DataFrame(data, columns=columns)

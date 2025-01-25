@@ -1,3 +1,4 @@
+import time
 import boto3
 
 class AthenaRepository:

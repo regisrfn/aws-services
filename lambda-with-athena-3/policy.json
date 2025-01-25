@@ -1,45 +1,64 @@
 {
-    "Version": "2012-10-17",
-    "Statement": [
-      {
-        "Sid": "AthenaQueryPermissions",
-        "Effect": "Allow",
-        "Action": [
-          "athena:StartQueryExecution",
-          "athena:StopQueryExecution",
-          "athena:GetQueryExecution",
-          "athena:GetQueryResults"
-        ],
-        "Resource": [
-          "arn:aws:athena:region:account-id:workgroup/primary"
-        ]
-      },
-      {
-        "Sid": "GlueDatabasePermissions",
-        "Effect": "Allow",
-        "Action": [
-          "glue:GetDatabase",
-          "glue:GetTable",
-          "glue:GetPartitions"
-        ],
-        "Resource": [
-          "arn:aws:glue:region:account-id:database/specific-database-name",
-          "arn:aws:glue:region:account-id:table/specific-database-name/*"
-        ]
-      },
-      {
-        "Sid": "S3AccessPermissions",
-        "Effect": "Allow",
-        "Action": [
-          "s3:GetObject",
-          "s3:PutObject",
-          "s3:ListBucket"
-        ],
-        "Resource": [
-          "arn:aws:s3:::your-query-results-bucket",
-          "arn:aws:s3:::your-query-results-bucket/*"
-        ]
-      }
-    ]
-  }
-  
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AthenaWorkgroupAccess",
+      "Effect": "Allow",
+      "Action": [
+        "athena:StartQueryExecution",
+        "athena:StopQueryExecution",
+        "athena:GetQueryExecution",
+        "athena:GetQueryResults",
+        "athena:ListQueryExecutions"
+      ],
+      "Resource": "arn:aws:athena:region:account-id:workgroup/your-workgroup-name"
+    },
+    {
+      "Sid": "GlueCatalogAccess",
+      "Effect": "Allow",
+      "Action": [
+        "glue:GetDatabase",
+        "glue:GetDatabases",
+        "glue:GetTable",
+        "glue:GetTables",
+        "glue:GetPartition",
+        "glue:GetPartitions",
+        "glue:BatchGetPartition",
+        "glue:CreateTable",
+        "glue:UpdateTable",
+        "glue:DeleteTable",
+        "glue:CreatePartition",
+        "glue:BatchCreatePartition",
+        "glue:UpdatePartition",
+        "glue:DeletePartition",
+        "glue:GetCatalogImportStatus",
+        "glue:BatchGetCrawlers",
+        "glue:StartCrawler",
+        "glue:StopCrawler",
+        "glue:GetCrawler",
+        "glue:UpdateCrawler",
+        "glue:CreateCrawler",
+        "glue:DeleteCrawler"
+      ],
+      "Resource": [
+        "arn:aws:glue:region:account-id:catalog",
+        "arn:aws:glue:region:account-id:database/your-database-name",
+        "arn:aws:glue:region:account-id:table/your-database-name/*",
+        "arn:aws:glue:region:account-id:partition/your-database-name/*"
+      ]
+    },
+    {
+      "Sid": "S3BucketAccess",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::your-query-results-bucket",
+        "arn:aws:s3:::your-query-results-bucket/*"
+      ]
+    }
+  ]
+}

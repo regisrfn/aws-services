@@ -1,18 +1,73 @@
 provider "aws" {
-  region = "us-east-1"  # ajuste para sua região
+  region = var.region
 }
 
-# 1) IAM Role para o AWS Batch Service
+variable "region" {
+  description = "AWS region"
+  type        = string
+  default     = "us-east-1"
+}
+
+variable "subnets" {
+  description = "List of subnets for Fargate"
+  type        = list(string)
+}
+
+variable "security_group_ids" {
+  description = "List of security group IDs for Fargate"
+  type        = list(string)
+}
+
+variable "main_image" {
+  description = "Docker image for main container"
+  type        = string
+}
+
+variable "main_vcpus" {
+  description = "vCPU units for main container"
+  type        = number
+  default     = 1
+}
+
+variable "main_memory" {
+  description = "Memory (MiB) for main container"
+  type        = number
+  default     = 2048
+}
+
+variable "dd_api_key" {
+  description = "Datadog API key"
+  type        = string
+  sensitive   = true
+}
+
+variable "dd_site" {
+  description = "Datadog site (e.g. datadoghq.com)"
+  type        = string
+  default     = "datadoghq.com"
+}
+
+variable "log_group_name" {
+  description = "CloudWatch Logs group"
+  type        = string
+  default     = "/aws/batch/job"
+}
+
+# IAM Role for AWS Batch service
+data "aws_iam_policy_document" "batch_service_assume_role" {
+  statement {
+    effect = "Allow"
+    principals {
+      type        = "Service"
+      identifiers = ["batch.amazonaws.com"]
+    }
+    actions = ["sts:AssumeRole"]
+  }
+}
+
 resource "aws_iam_role" "batch_service_role" {
-  name = "aws-batch-service-role"
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Principal = { Service = "batch.amazonaws.com" }
-      Action    = "sts:AssumeRole"
-    }]
-  })
+  name               = "batch-service-role"
+  assume_role_policy = data.aws_iam_policy_document.batch_service_assume_role.json
 }
 
 resource "aws_iam_role_policy_attachment" "batch_service_role_attach" {
@@ -20,99 +75,147 @@ resource "aws_iam_role_policy_attachment" "batch_service_role_attach" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSBatchServiceRole"
 }
 
-# 2) IAM Role para execução de Tasks ECS/Fargate
-resource "aws_iam_role" "ecs_task_execution_role" {
-  name = "ecsTaskExecutionRole"
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Principal = { Service = "ecs-tasks.amazonaws.com" }
-      Action    = "sts:AssumeRole"
-    }]
-  })
+# IAM Execution Role for ECS Fargate tasks
+data "aws_iam_policy_document" "batch_execution_assume_role" {
+  statement {
+    effect = "Allow"
+    principals {
+      type        = "Service"
+      identifiers = ["ecs-tasks.amazonaws.com"]
+    }
+    actions = ["sts:AssumeRole"]
+  }
 }
 
-resource "aws_iam_role_policy_attachment" "ecs_task_execution_policy" {
-  role       = aws_iam_role.ecs_task_execution_role.name
+resource "aws_iam_role" "batch_execution_role" {
+  name               = "batch-execution-role"
+  assume_role_policy = data.aws_iam_policy_document.batch_execution_assume_role.json
+}
+
+resource "aws_iam_role_policy_attachment" "batch_execution_attach" {
+  role       = aws_iam_role.batch_execution_role.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-# 3) Compute Environment
+# IAM Role that the containers assume
+data "aws_iam_policy_document" "batch_job_assume_role" {
+  statement {
+    effect = "Allow"
+    principals {
+      type        = "Service"
+      identifiers = ["ecs-tasks.amazonaws.com"]
+    }
+    actions = ["sts:AssumeRole"]
+  }
+}
+
+resource "aws_iam_role" "batch_job_role" {
+  name               = "batch-job-role"
+  assume_role_policy = data.aws_iam_policy_document.batch_job_assume_role.json
+}
+
+# AWS Batch Compute Environment
 resource "aws_batch_compute_environment" "batch_ce" {
-  compute_environment_name = "batch-ce"
-  type                     = "MANAGED"
+  compute_environment_name = "batch-compute-env"
   service_role             = aws_iam_role.batch_service_role.arn
+  type                     = "MANAGED"
 
   compute_resources {
     type               = "FARGATE"
     max_vcpus          = 256
-    subnets            = ["subnet-01234567","subnet-89abcdef"]  # seus subnets
-    security_group_ids = ["sg-01234567"]                      # seu SG
+    subnets            = var.subnets
+    security_group_ids = var.security_group_ids
   }
 }
 
-# 4) Job Queue
-resource "aws_batch_job_queue" "batch_queue" {
-  name     = "batch-queue"
+# AWS Batch Job Queue
+resource "aws_batch_job_queue" "batch_jq" {
+  name     = "batch-job-queue"
   priority = 1
 
   compute_environment_order {
-    order               = 1
     compute_environment = aws_batch_compute_environment.batch_ce.arn
+    order               = 1
   }
 }
 
-# 5) Job Definition com múltiplos containers via ecs_properties
-resource "aws_batch_job_definition" "batch_job" {
-  name                  = "batch-job-definition"
+# AWS Batch Job Definition with multiple containers
+resource "aws_batch_job_definition" "batch_jd" {
+  name                  = "batch-multi-container-job"
   type                  = "container"
   platform_capabilities = ["FARGATE"]
-  execution_role_arn    = aws_iam_role.ecs_task_execution_role.arn
 
-  # define múltiplos containers (app + datadog-apm + log-router)
-  ecs_properties = jsonencode({
-    taskProperties = [
-      {
-        containers = [
-          {
-            name  = "app-container"
-            image = "123456789012.dkr.ecr.us-east-1.amazonaws.com/myapp:latest"
-            essential = true
-            resourceRequirements = [
-              { type = "VCPU",  value = "2"    },
-              { type = "MEMORY", value = "4096" }
-            ]
-            command = ["./start.sh"]
-          },
-          {
-            name  = "datadog-apm"
-            image = "public.ecr.aws/datadog/agent:latest"
-            essential   = false
-            environment = [
-              { name = "DD_APM_ENABLED",          value = "true"  },
-              { name = "DD_APM_NON_LOCAL_TRAFFIC",value = "true"  }
-            ]
-            resourceRequirements = [
-              { type = "VCPU",  value = "0.25" },
-              { type = "MEMORY", value = "512"  }
-            ]
-          },
-          {
-            name  = "log-router"
-            image = "public.ecr.aws/datadog/logs-router:latest"
-            essential = false
-            firelensConfiguration = {
-              type    = "fluentbit"
-              options = { "enable-ecs-log-metadata" = "true" }
+  container_properties = jsonencode({
+    ecsProperties = {
+      executionRoleArn = aws_iam_role.batch_execution_role.arn
+      taskRoleArn      = aws_iam_role.batch_job_role.arn
+      taskProperties   = [
+        {
+          containers = [
+            {
+              name      = "main"
+              image     = var.main_image
+              vcpus     = var.main_vcpus
+              memory    = var.main_memory
+              essential = true
+              logConfiguration = {
+                logDriver = "awslogs"
+                options = {
+                  awslogs-group         = var.log_group_name
+                  awslogs-region        = var.region
+                  awslogs-stream-prefix = "main"
+                }
+              }
+            },
+            {
+              name      = "datadog-log"
+              image     = "public.ecr.aws/datadog/agent:latest"
+              essential = false
+              logConfiguration = {
+                logDriver = "awslogs"
+                options = {
+                  awslogs-group         = var.log_group_name
+                  awslogs-region        = var.region
+                  awslogs-stream-prefix = "dd-log"
+                }
+              }
+              environment = [
+                { name = "DD_API_KEY", value = var.dd_api_key },
+                { name = "ECS_FARGATE", value = "true" },
+                { name = "DD_SITE", value = var.dd_site },
+              ]
+            },
+            {
+              name      = "datadog-apm"
+              image     = "public.ecr.aws/datadog/apm:latest"
+              essential = false
+              logConfiguration = {
+                logDriver = "awslogs"
+                options = {
+                  awslogs-group         = var.log_group_name
+                  awslogs-region        = var.region
+                  awslogs-stream-prefix = "dd-apm"
+                }
+              }
+              environment = [
+                { name = "DD_API_KEY", value = var.dd_api_key },
+                { name = "ECS_FARGATE", value = "true" },
+                { name = "DD_SITE", value = var.dd_site },
+              ]
             }
-            resourceRequirements = [
-              { type = "VCPU",  value = "0.25" },
-              { type = "MEMORY", value = "256"  }
-            ]
-          }
-        ]
-      }
-    ]
+          ]
+        }
+      ]
+    }
   })
+}
+
+output "job_definition_arn" {
+  description = "ARN of the AWS Batch Job Definition"
+  value       = aws_batch_job_definition.batch_jd.arn
+}
+
+output "execution_role_arn" {
+  description = "ARN of the ECS Execution Role"
+  value       = aws_iam_role.batch_execution_role.arn
 }

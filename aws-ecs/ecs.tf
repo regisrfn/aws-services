@@ -54,7 +54,7 @@ provider "aws" {
 ###############################################################################
 # DATA SOURCES
 ###############################################################################
-# Cluster ECS existente
+# ECS Cluster existente
 data "aws_ecs_cluster" "existing" {
   cluster_name = var.cluster_name
 }
@@ -62,6 +62,31 @@ data "aws_ecs_cluster" "existing" {
 # VPC
 data "aws_vpc" "selected" {
   id = var.vpc_id
+}
+
+# AssumeRole policy document genérico para ECS
+data "aws_iam_policy_document" "ecs_assume" {
+  statement {
+    effect = "Allow"
+    principals {
+      type        = "Service"
+      identifiers = ["ecs-tasks.amazonaws.com"]
+    }
+    actions = ["sts:AssumeRole"]
+  }
+}
+
+# Policy inline para a Task Role (ex: S3 ReadOnly)
+data "aws_iam_policy_document" "ecs_task_inline" {
+  statement {
+    sid     = "AllowS3ReadOnly"
+    effect  = "Allow"
+    actions = [
+      "s3:ListBucket",
+      "s3:GetObject",
+    ]
+    resources = ["*"]
+  }
 }
 
 ###############################################################################
@@ -124,6 +149,7 @@ resource "aws_lb_target_group" "app_tg" {
   protocol    = "HTTP"
   target_type = "ip"
   vpc_id      = data.aws_vpc.selected.id
+
   health_check {
     path                = "/"
     interval            = 30
@@ -145,26 +171,30 @@ resource "aws_lb_listener" "http" {
 }
 
 ###############################################################################
-# IAM ROLE para ECS Task Execution
+# IAM ROLES & POLICIES
 ###############################################################################
+# Execution Role para ECS (pull de imagem + logs)
 resource "aws_iam_role" "ecs_task_execution_role" {
   name               = "${var.service_name}-exec-role"
-  assume_role_policy = data.aws_iam_policy_document.ecs_task_assume.json
-}
-
-data "aws_iam_policy_document" "ecs_task_assume" {
-  statement {
-    actions = ["sts:AssumeRole"]
-    principals {
-      type        = "Service"
-      identifiers = ["ecs-tasks.amazonaws.com"]
-    }
-  }
+  assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
 }
 
 resource "aws_iam_role_policy_attachment" "exec_attach" {
   role       = aws_iam_role.ecs_task_execution_role.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+# Task Role (role usada pelo container)
+resource "aws_iam_role" "ecs_task_role" {
+  name               = "${var.service_name}-task-role"
+  assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
+}
+
+# Inline policy para a Task Role
+resource "aws_iam_role_policy" "ecs_task_inline_policy" {
+  name   = "${var.service_name}-task-inline-policy"
+  role   = aws_iam_role.ecs_task_role.id
+  policy = data.aws_iam_policy_document.ecs_task_inline.json
 }
 
 ###############################################################################
@@ -177,11 +207,12 @@ resource "aws_ecs_task_definition" "app" {
   cpu                      = "256"
   memory                   = "512"
   execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
+  task_role_arn            = aws_iam_role.ecs_task_role.arn
 
   container_definitions = jsonencode([
     {
-      name      = var.service_name
-      image     = var.image
+      name         = var.service_name
+      image        = var.image
       portMappings = [
         {
           containerPort = var.container_port
@@ -216,4 +247,17 @@ resource "aws_ecs_service" "app" {
   }
 
   depends_on = [aws_lb_listener.http]
+}
+
+###############################################################################
+# OUTPUTS
+###############################################################################
+output "alb_dns_name" {
+  description = "DNS público do Application Load Balancer"
+  value       = aws_lb.app.dns_name
+}
+
+output "alb_zone_id" {
+  description = "Hosted Zone ID do ALB (útil para Route 53 ALIAS)"
+  value       = aws_lb.app.zone_id
 }

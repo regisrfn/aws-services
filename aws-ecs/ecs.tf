@@ -25,7 +25,7 @@ variable "image" {
 variable "container_port" {
   description = "Porta em que o container escuta"
   type        = number
-  default     = 80
+  default     = 3000
 }
 
 variable "desired_count" {
@@ -35,12 +35,12 @@ variable "desired_count" {
 }
 
 variable "vpc_id" {
-  description = "ID da VPC onde o ALB e ECS irão rodar"
+  description = "ID da VPC onde o NLB e ECS irão rodar"
   type        = string
 }
 
 variable "subnet_ids" {
-  description = "Lista de subnets públicas para o ALB e tasks"
+  description = "Lista de subnets públicas para o NLB"
   type        = list(string)
 }
 
@@ -54,17 +54,14 @@ provider "aws" {
 ###############################################################################
 # DATA SOURCES
 ###############################################################################
-# ECS Cluster existente
 data "aws_ecs_cluster" "existing" {
   cluster_name = var.cluster_name
 }
 
-# VPC
 data "aws_vpc" "selected" {
   id = var.vpc_id
 }
 
-# AssumeRole policy document genérico para ECS
 data "aws_iam_policy_document" "ecs_assume" {
   statement {
     effect = "Allow"
@@ -76,7 +73,6 @@ data "aws_iam_policy_document" "ecs_assume" {
   }
 }
 
-# Policy inline para a Task Role (ex: S3 ReadOnly)
 data "aws_iam_policy_document" "ecs_task_inline" {
   statement {
     sid     = "AllowS3ReadOnly"
@@ -90,40 +86,21 @@ data "aws_iam_policy_document" "ecs_task_inline" {
 }
 
 ###############################################################################
-# SECURITY GROUPS
+# SECURITY GROUP (apenas para as Tasks)
 ###############################################################################
-# SG para o ALB aceitar tráfego HTTP
-resource "aws_security_group" "alb_sg" {
-  name        = "${var.service_name}-alb-sg"
-  description = "Allow HTTP inbound"
+resource "aws_security_group" "ecs_sg" {
+  name        = "${var.service_name}-ecs-sg"
+  description = "Allow traffic to container port"
   vpc_id      = data.aws_vpc.selected.id
 
+  # Agora aceita direto de internet (ou use um CIDR mais restrito)
   ingress {
-    from_port   = 80
-    to_port     = 80
+    from_port   = var.container_port
+    to_port     = var.container_port
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-}
 
-# SG para as tasks só aceitarem do ALB
-resource "aws_security_group" "ecs_sg" {
-  name        = "${var.service_name}-ecs-sg"
-  description = "Allow traffic from ALB"
-  vpc_id      = data.aws_vpc.selected.id
-
-  ingress {
-    from_port       = var.container_port
-    to_port         = var.container_port
-    protocol        = "tcp"
-    security_groups = [aws_security_group.alb_sg.id]
-  }
   egress {
     from_port   = 0
     to_port     = 0
@@ -133,36 +110,36 @@ resource "aws_security_group" "ecs_sg" {
 }
 
 ###############################################################################
-# APPLICATION LOAD BALANCER
+# NETWORK LOAD BALANCER
 ###############################################################################
 resource "aws_lb" "app" {
-  name               = "${var.service_name}-alb"
+  name               = "${var.service_name}-nlb"
   internal           = false
-  load_balancer_type = "application"
-  security_groups    = [aws_security_group.alb_sg.id]
+  load_balancer_type = "network"
   subnets            = var.subnet_ids
 }
 
 resource "aws_lb_target_group" "app_tg" {
   name        = "${var.service_name}-tg"
   port        = var.container_port
-  protocol    = "HTTP"
+  protocol    = "TCP"
   target_type = "ip"
   vpc_id      = data.aws_vpc.selected.id
 
   health_check {
-    path                = "/"
+    protocol            = "TCP"
+    port                = "${var.container_port}"
     interval            = 30
-    timeout             = 5
+    timeout             = 10
     healthy_threshold   = 2
     unhealthy_threshold = 2
   }
 }
 
-resource "aws_lb_listener" "http" {
+resource "aws_lb_listener" "tcp" {
   load_balancer_arn = aws_lb.app.arn
-  port              = 80
-  protocol          = "HTTP"
+  port              = var.container_port
+  protocol          = "TCP"
 
   default_action {
     type             = "forward"
@@ -173,7 +150,6 @@ resource "aws_lb_listener" "http" {
 ###############################################################################
 # IAM ROLES & POLICIES
 ###############################################################################
-# Execution Role para ECS (pull de imagem + logs)
 resource "aws_iam_role" "ecs_task_execution_role" {
   name               = "${var.service_name}-exec-role"
   assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
@@ -184,13 +160,11 @@ resource "aws_iam_role_policy_attachment" "exec_attach" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-# Task Role (role usada pelo container)
 resource "aws_iam_role" "ecs_task_role" {
   name               = "${var.service_name}-task-role"
   assume_role_policy = data.aws_iam_policy_document.ecs_assume.json
 }
 
-# Inline policy para a Task Role
 resource "aws_iam_role_policy" "ecs_task_inline_policy" {
   name   = "${var.service_name}-task-inline-policy"
   role   = aws_iam_role.ecs_task_role.id
@@ -211,8 +185,8 @@ resource "aws_ecs_task_definition" "app" {
 
   container_definitions = jsonencode([
     {
-      name         = var.service_name
-      image        = var.image
+      name  = var.service_name
+      image = var.image
       portMappings = [
         {
           containerPort = var.container_port
@@ -235,9 +209,9 @@ resource "aws_ecs_service" "app" {
   task_definition = aws_ecs_task_definition.app.arn
 
   network_configuration {
-    subnets         = var.subnet_ids
-    security_groups = [aws_security_group.ecs_sg.id]
-    assign_public_ip = true
+    subnets          = var.subnet_ids
+    security_groups  = [aws_security_group.ecs_sg.id]
+    assign_public_ip = false    # recommended para tasks ficarem só acessíveis via NLB
   }
 
   load_balancer {
@@ -246,18 +220,13 @@ resource "aws_ecs_service" "app" {
     container_port   = var.container_port
   }
 
-  depends_on = [aws_lb_listener.http]
+  depends_on = [aws_lb_listener.tcp]
 }
 
 ###############################################################################
 # OUTPUTS
 ###############################################################################
-output "alb_dns_name" {
-  description = "DNS público do Application Load Balancer"
+output "nlb_dns_name" {
+  description = "DNS público do Network Load Balancer"
   value       = aws_lb.app.dns_name
-}
-
-output "alb_zone_id" {
-  description = "Hosted Zone ID do ALB (útil para Route 53 ALIAS)"
-  value       = aws_lb.app.zone_id
 }

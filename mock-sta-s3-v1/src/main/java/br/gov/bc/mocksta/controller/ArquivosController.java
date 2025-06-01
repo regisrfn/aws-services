@@ -5,6 +5,7 @@ import br.gov.bc.mocksta.model.RangeInterval;
 import com.amazonaws.services.s3.AmazonS3;
 import com.amazonaws.services.s3.model.*;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.core.io.InputStreamResource;
 import org.springframework.http.*;
 import org.springframework.util.StreamUtils;
 import org.springframework.web.bind.annotation.*;
@@ -27,7 +28,8 @@ import java.util.concurrent.atomic.AtomicLong;
  *  - GET    /staws/arquivos/{protocolo}/conteudo
  *  - GET    /staws/arquivos?tipoConsulta=... (consulta de protocolos)
  *
- * Agora com integração ao AWS SDK v1 (AmazonS3), Basic Auth, e rota de consulta genérica.
+ * Agora com integração ao AWS SDK v1 (AmazonS3), Basic Auth, fluxo de streaming
+ * para download completo (sem carregar tudo na memória).
  */
 @RestController
 @RequestMapping("/staws/arquivos")
@@ -271,14 +273,15 @@ public class ArquivosController {
     /**
      * 4) GET /staws/arquivos/{protocolo}/conteudo
      * - Se existir no S3:
-     *     • sem Range       → devolve tudo (200 OK)
-     *     • com Range       → devolve trecho (206 Partial Content)
+     *     • sem Range       → devolve tudo (200 OK), em streaming
+     *     • com Range       → devolve trecho (206 Partial Content), em streaming
      * - Se não existir no S3, mas houver upload em andamento:
-     *     • sem Range       → devolve local (200 OK)
-     *     • com Range       → devolve trecho local (206 Partial Content)
+     *     • sem Range       → devolve local (200 OK), em streaming
+     *     • com Range       → devolve trecho local (206 Partial Content), em byte[]
+     *       (como trecho é menor, lemos em memória; mas em produção poderia fazer streaming parcial também).
      */
     @GetMapping(path = "/{protocolo}/conteudo")
-    public ResponseEntity<byte[]> downloadConteudo(
+    public ResponseEntity<?> downloadConteudo(
             @PathVariable("protocolo") String protocolo,
             @RequestHeader(value = "Range", required = false) String rangeHeader,
             HttpServletRequest request
@@ -290,9 +293,9 @@ public class ArquivosController {
             return new ResponseEntity<>(headers, HttpStatus.UNAUTHORIZED);
         }
 
-        // Se existir no S3, serve de lá
+        // Se existir no S3, serve de lá (streaming)
         if (objectExistsInS3(protocolo)) {
-            return serveFromS3(protocolo, rangeHeader);
+            return serveFromS3Streaming(protocolo, rangeHeader);
         }
 
         // Senão, verifica upload em andamento local
@@ -303,15 +306,18 @@ public class ArquivosController {
 
         try {
             if (rangeHeader != null && rangeHeader.startsWith("bytes=")) {
+                // Leitura de um trecho específico do arquivo local
+                long totalSize = fi.getTotalSize();
+                if (totalSize < 0) {
+                    return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+                }
+
                 String semBytes = rangeHeader.substring(6).trim();
                 String[] partes = semBytes.split("-");
                 long inicio = Long.parseLong(partes[0]);
-                long fim = partes.length > 1 ? Long.parseLong(partes[1]) : fi.getTotalSize() - 1;
+                long fim = partes.length > 1 ? Long.parseLong(partes[1]) : totalSize - 1;
 
-                if (fi.getTotalSize() < 0) {
-                    return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
-                }
-                if (inicio < 0 || fim >= fi.getTotalSize() || inicio > fim) {
+                if (inicio < 0 || fim >= totalSize || inicio > fim) {
                     return ResponseEntity.status(HttpStatus.REQUESTED_RANGE_NOT_SATISFIABLE).build();
                 }
 
@@ -319,20 +325,72 @@ public class ArquivosController {
                 HttpHeaders headers = new HttpHeaders();
                 headers.setContentType(MediaType.APPLICATION_OCTET_STREAM);
                 headers.setContentLength(dados.length);
-                headers.add(HttpHeaders.CONTENT_RANGE, "bytes " + inicio + "-" + fim + "/" + fi.getTotalSize());
+                headers.add(HttpHeaders.CONTENT_RANGE, "bytes " + inicio + "-" + fim + "/" + totalSize);
                 return new ResponseEntity<>(dados, headers, HttpStatus.PARTIAL_CONTENT);
             } else {
-                if (fi.getTotalSize() < 0) {
+                // Streaming completo do arquivo local (upload em andamento)
+                long totalSize = fi.getTotalSize();
+                if (totalSize < 0) {
                     return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
                 }
-                byte[] dados = fi.readFull();
+
+                File localFile = fi.getTempFile();
+                InputStreamResource resource = new InputStreamResource(new FileInputStream(localFile));
+
                 HttpHeaders headers = new HttpHeaders();
                 headers.setContentType(MediaType.APPLICATION_OCTET_STREAM);
-                headers.setContentLength(dados.length);
-                return new ResponseEntity<>(dados, headers, HttpStatus.OK);
+                headers.setContentLength(localFile.length());
+                return new ResponseEntity<>(resource, headers, HttpStatus.OK);
             }
         } catch (IOException e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+    }
+
+    /**
+     * 4.a) Serve o objeto diretamente do S3 (streaming).
+     * - Sem Range: retorna 200 OK com InputStreamResource.
+     * - Com Range: retorna 206 Partial Content com InputStreamResource.
+     */
+    private ResponseEntity<?> serveFromS3Streaming(String protocolo, String rangeHeader) {
+        try {
+            // Obtém metadados para saber o tamanho total
+            ObjectMetadata metadata = s3Client.getObjectMetadata(bucketName, protocolo);
+            long totalSize = metadata.getContentLength();
+
+            if (rangeHeader != null && rangeHeader.startsWith("bytes=")) {
+                // Download parcial (streaming do trecho)
+                String semBytes = rangeHeader.substring(6).trim();
+                String[] partes = semBytes.split("-");
+                long inicio = Long.parseLong(partes[0]);
+                long fim = partes.length > 1 ? Long.parseLong(partes[1]) : totalSize - 1;
+
+                if (inicio < 0 || fim >= totalSize || inicio > fim) {
+                    return ResponseEntity.status(HttpStatus.REQUESTED_RANGE_NOT_SATISFIABLE).build();
+                }
+
+                GetObjectRequest gor = new GetObjectRequest(bucketName, protocolo)
+                        .withRange(inicio, fim);
+                S3Object s3obj = s3Client.getObject(gor);
+                InputStreamResource resource = new InputStreamResource(s3obj.getObjectContent());
+
+                HttpHeaders headers = new HttpHeaders();
+                headers.setContentType(MediaType.APPLICATION_OCTET_STREAM);
+                headers.setContentLength(fim - inicio + 1);
+                headers.add(HttpHeaders.CONTENT_RANGE, "bytes " + inicio + "-" + fim + "/" + totalSize);
+                return new ResponseEntity<>(resource, headers, HttpStatus.PARTIAL_CONTENT);
+            } else {
+                // Download completo (streaming de todo o objeto)
+                S3Object s3obj = s3Client.getObject(bucketName, protocolo);
+                InputStreamResource resource = new InputStreamResource(s3obj.getObjectContent());
+
+                HttpHeaders headers = new HttpHeaders();
+                headers.setContentType(MediaType.APPLICATION_OCTET_STREAM);
+                headers.setContentLength(totalSize);
+                return new ResponseEntity<>(resource, headers, HttpStatus.OK);
+            }
+        } catch (AmazonS3Exception e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
         }
     }
 
@@ -416,52 +474,6 @@ public class ArquivosController {
                 return false;
             }
             return false;
-        }
-    }
-
-    /**
-     * Serve o objeto diretamente do S3 (com suporte a Range).
-     */
-    private ResponseEntity<byte[]> serveFromS3(String protocolo, String rangeHeader) {
-        try {
-            ObjectMetadata metadata = s3Client.getObjectMetadata(bucketName, protocolo);
-            long totalSize = metadata.getContentLength();
-
-            if (rangeHeader != null && rangeHeader.startsWith("bytes=")) {
-                String semBytes = rangeHeader.substring(6).trim();
-                String[] partes = semBytes.split("-");
-                long inicio = Long.parseLong(partes[0]);
-                long fim = partes.length > 1 ? Long.parseLong(partes[1]) : totalSize - 1;
-
-                if (inicio < 0 || fim >= totalSize || inicio > fim) {
-                    return ResponseEntity.status(HttpStatus.REQUESTED_RANGE_NOT_SATISFIABLE).build();
-                }
-
-                GetObjectRequest gor = new GetObjectRequest(bucketName, protocolo)
-                        .withRange(inicio, fim);
-                S3Object s3obj = s3Client.getObject(gor);
-                try (S3ObjectInputStream s3is = s3obj.getObjectContent()) {
-                    byte[] dados = StreamUtils.copyToByteArray(s3is);
-                    HttpHeaders headers = new HttpHeaders();
-                    headers.setContentType(MediaType.APPLICATION_OCTET_STREAM);
-                    headers.setContentLength(dados.length);
-                    headers.add(HttpHeaders.CONTENT_RANGE, "bytes " + inicio + "-" + fim + "/" + totalSize);
-                    return new ResponseEntity<>(dados, headers, HttpStatus.PARTIAL_CONTENT);
-                }
-            } else {
-                S3Object s3obj = s3Client.getObject(bucketName, protocolo);
-                try (S3ObjectInputStream s3is = s3obj.getObjectContent()) {
-                    byte[] dados = StreamUtils.copyToByteArray(s3is);
-                    HttpHeaders headers = new HttpHeaders();
-                    headers.setContentType(MediaType.APPLICATION_OCTET_STREAM);
-                    headers.setContentLength(dados.length);
-                    return new ResponseEntity<>(dados, headers, HttpStatus.OK);
-                }
-            }
-        } catch (AmazonS3Exception e) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
-        } catch (IOException e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }
     }
 

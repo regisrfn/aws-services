@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project
+    xmlns="http://maven.apache.org/POM/4.0.0"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="
+      http://maven.apache.org/POM/4.0.0
+      http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>br.gov.bc</groupId>
+  <artifactId>mock-sta-s3-v1</artifactId>
+  <version>1.0.0</version>
+  <name>Mock STA Banco Central com AWS SDK v1</name>
+  <description>Aplicação que simula as rotas /staws/arquivos/... do Banco Central usando Java 17 e AWS SDK v1 (aws-java-sdk-s3).</description>
+
+  <properties>
+    <!-- Java 17 -->
+    <java.version>17</java.version>
+    <!-- Spring Boot 2.7.x (suporta JDK 17) -->
+    <spring.boot.version>2.7.12</spring.boot.version>
+    <!-- Versão do AWS Java SDK S3 (v1) -->
+    <aws.sdk.version>1.12.388</aws.sdk.version>
+  </properties>
+
+  <dependencies>
+    <!-- Spring Boot Starter Web (MVC) -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+      <version>${spring.boot.version}</version>
+    </dependency>
+
+    <!-- AWS Java SDK v1 para S3 -->
+    <dependency>
+      <groupId>com.amazonaws</groupId>
+      <artifactId>aws-java-sdk-s3</artifactId>
+      <version>${aws.sdk.version}</version>
+    </dependency>
+
+    <!-- (Opcional) Lombok para reduzir boilerplate de getters/setters -->
+    <dependency>
+      <groupId>org.projectlombok</groupId>
+      <artifactId>lombok</artifactId>
+      <version>1.18.26</version>
+      <scope>provided</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <!-- Plugin do Spring Boot para empacotar o JAR executável -->
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+        <version>${spring.boot.version}</version>
+      </plugin>
+      <!-- Maven Compiler Plugin configurado para Java 17 -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.10.1</version>
+        <configuration>
+          <source>${java.version}</source>
+          <target>${java.version}</target>
+          <release>${java.version}</release>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

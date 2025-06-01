@@ -1,0 +1,157 @@
+{
+  "_type": "export",
+  "__export_format": 4,
+  "__export_date": "2023-05-31T12:00:00.000Z",
+  "__export_source": "insomnia.importer:v2023.1.0",
+  "resources": [
+    {
+      "_id": "wrk_MockSTA2023",
+      "_type": "workspace",
+      "name": "Mock STA Collection 2023",
+      "description": ""
+    },
+    {
+      "_id": "env_MockSTA2023",
+      "_type": "environment",
+      "parentId": "wrk_MockSTA2023",
+      "name": "Base Environment",
+      "data": {
+        "base_url": "http://localhost:8080",
+        "protocol": "",
+        "auth_token": "dXN1YXJpb3Rlc3RlOnNlbmhhdGVzdGU="
+      },
+      "dataPropertyOrder": []
+    },
+    {
+      "_id": "req_CreateProtocol",
+      "_type": "request",
+      "parentId": "wrk_MockSTA2023",
+      "name": "Create Protocol",
+      "method": "POST",
+      "url": "{{ base_url }}/staws/arquivos",
+      "body": {
+        "mimeType": "application/xml",
+        "text": "<RequisicaoProtocolo>\\n  <NomeArquivo>teste.txt</NomeArquivo>\\n  <NomeOrigem>MinhaEmpresa</NomeOrigem>\\n</RequisicaoProtocolo>"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Basic {{ auth_token }}"
+        },
+        {
+          "name": "Content-Type",
+          "value": "application/xml"
+        }
+      ],
+      "authentication": {}
+    },
+    {
+      "_id": "req_UploadFull",
+      "_type": "request",
+      "parentId": "wrk_MockSTA2023",
+      "name": "Upload Full",
+      "method": "PUT",
+      "url": "{{ base_url }}/staws/arquivos/{{ protocol }}/conteudo",
+      "body": {
+        "mimeType": "application/octet-stream",
+        "text": "<!-- Substitua com conte\u00fado bin\u00e1rio do arquivo -->"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Basic {{ auth_token }}"
+        },
+        {
+          "name": "Content-Type",
+          "value": "application/octet-stream"
+        }
+      ],
+      "authentication": {}
+    },
+    {
+      "_id": "req_UploadPart",
+      "_type": "request",
+      "parentId": "wrk_MockSTA2023",
+      "name": "Upload Part",
+      "method": "PUT",
+      "url": "{{ base_url }}/staws/arquivos/{{ protocol }}/conteudo",
+      "body": {
+        "mimeType": "application/octet-stream",
+        "text": "<!-- Substitua com conte\u00fado bin\u00e1rio do chunk -->"
+      },
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Basic {{ auth_token }}"
+        },
+        {
+          "name": "Content-Type",
+          "value": "application/octet-stream"
+        },
+        {
+          "name": "Content-Range",
+          "value": "bytes 0-499/1000"
+        }
+      ],
+      "authentication": {}
+    },
+    {
+      "_id": "req_GetPosicaoUpload",
+      "_type": "request",
+      "parentId": "wrk_MockSTA2023",
+      "name": "Get Posicao Upload",
+      "method": "GET",
+      "url": "{{ base_url }}/staws/arquivos/{{ protocol }}/posicaoupload",
+      "body": {},
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Basic {{ auth_token }}"
+        }
+      ],
+      "authentication": {}
+    },
+    {
+      "_id": "req_DownloadFull",
+      "_type": "request",
+      "parentId": "wrk_MockSTA2023",
+      "name": "Download Full",
+      "method": "GET",
+      "url": "{{ base_url }}/staws/arquivos/{{ protocol }}/conteudo",
+      "body": {},
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Basic {{ auth_token }}"
+        }
+      ],
+      "authentication": {}
+    },
+    {
+      "_id": "req_DownloadRange",
+      "_type": "request",
+      "parentId": "wrk_MockSTA2023",
+      "name": "Download Range",
+      "method": "GET",
+      "url": "{{ base_url }}/staws/arquivos/{{ protocol }}/conteudo",
+      "body": {},
+      "parameters": [],
+      "headers": [
+        {
+          "name": "Authorization",
+          "value": "Basic {{ auth_token }}"
+        },
+        {
+          "name": "Range",
+          "value": "bytes=100-499"
+        }
+      ],
+      "authentication": {}
+    }
+  ]
+}

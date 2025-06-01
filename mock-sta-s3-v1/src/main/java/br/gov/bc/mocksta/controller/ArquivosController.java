@@ -2,7 +2,6 @@ package br.gov.bc.mocksta.controller;
 
 import br.gov.bc.mocksta.model.FileInfo;
 import br.gov.bc.mocksta.model.RangeInterval;
-import com.amazonaws.AmazonServiceException;
 import com.amazonaws.services.s3.AmazonS3;
 import com.amazonaws.services.s3.model.*;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -13,6 +12,9 @@ import org.springframework.web.server.ResponseStatusException;
 
 import javax.servlet.http.HttpServletRequest;
 import java.io.*;
+import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -23,23 +25,35 @@ import java.util.concurrent.atomic.AtomicLong;
  *  - PUT    /staws/arquivos/{protocolo}/conteudo
  *  - GET    /staws/arquivos/{protocolo}/posicaoupload
  *  - GET    /staws/arquivos/{protocolo}/conteudo
+ *  - GET    /staws/arquivos?tipoConsulta=... (consulta de protocolos)
  *
- * Agora com integração ao AWS SDK v1 (AmazonS3).
+ * Agora com integração ao AWS SDK v1 (AmazonS3), Basic Auth, e rota de consulta genérica.
  */
 @RestController
 @RequestMapping("/staws/arquivos")
 public class ArquivosController {
 
-import javax.servlet.http.HttpServletRequest;
-import java.nio.charset.StandardCharsets;
-import java.util.Base64;
+    // Mapa em memória: protocolo -> FileInfo (upload em andamento)
+    private final Map<String, FileInfo> protocolosMap = new ConcurrentHashMap<>();
 
-    // User and password for Basic Auth
+    // Gerador de IDs sequenciais para novos protocolos
+    private final AtomicLong protocoloGenerator = new AtomicLong(1000);
+
+    private final AmazonS3 s3Client;
+    private final String bucketName;
+
+    // Usuário e senha esperados para Basic Auth (somente mock)
     private static final String AUTH_USER = "usuarioteste";
     private static final String AUTH_PASS = "senhateste";
 
+    @Autowired
+    public ArquivosController(AmazonS3 s3Client, String bucketName) {
+        this.s3Client = s3Client;
+        this.bucketName = bucketName;
+    }
+
     /**
-     * Validates the Basic Auth credentials from the request.
+     * Valida credenciais Basic Auth.
      */
     private boolean isAuthorized(HttpServletRequest request) {
         String authHeader = request.getHeader("Authorization");
@@ -58,56 +72,37 @@ import java.util.Base64;
         return AUTH_USER.equals(user) && AUTH_PASS.equals(pass);
     }
 
-    // Mapa em memória: protocolo -> FileInfo (upload em andamento)
-    private final Map<String, FileInfo> protocolosMap = new ConcurrentHashMap<>();
-
-    // Gerador de IDs sequenciais para novos protocolos
-    private final AtomicLong protocoloGenerator = new AtomicLong(1000);
-
-    private final AmazonS3 s3Client;
-    private final String bucketName;
-
-    @Autowired
-    public ArquivosController(AmazonS3 s3Client, String bucketName) {
-        this.s3Client = s3Client;
-        this.bucketName = bucketName;
-    }
-
     /**
-     * POST /staws/arquivos
-     * Recebe XML com metadados (que, neste mock, não é parseado de verdade),
-     * gera um novo protocolo, armazena um FileInfo (arquivo temporário) e retorna
-     * o XML de resposta com <Protocolo> e <atom:link href=".../conteudo" .../>.
+     * 1) POST /staws/arquivos
+     * Gera um novo protocolo e cria o FileInfo com arquivo temporário local.
+     * Retorna XML com <Protocolo> e <atom:link href=".../{protocolo}/conteudo" .../>.
      */
     @PostMapping(
-    // Basic Auth validation
-    if (!isAuthorized(request)) {
-        HttpHeaders headers = new HttpHeaders();
-        headers.add("WWW-Authenticate", "Basic realm=\"STA Mock\"");
-        return new ResponseEntity<>(headers, HttpStatus.UNAUTHORIZED);
-    }
             consumes = MediaType.APPLICATION_XML_VALUE,
             produces = MediaType.APPLICATION_XML_VALUE
     )
-    public ResponseEntity<String> criarProtocolo(
-            @RequestBody byte[] xmlBytes,
-            HttpServletRequest request
-    ) {
-        // Gera novo protocolo
+    public ResponseEntity<String> criarProtocolo(@RequestBody byte[] xmlBytes,
+                                                 HttpServletRequest request) {
+        // Basic Auth
+        if (!isAuthorized(request)) {
+            HttpHeaders headers = new HttpHeaders();
+            headers.add("WWW-Authenticate", "Basic realm=\"STA Mock\"");
+            return new ResponseEntity<>(headers, HttpStatus.UNAUTHORIZED);
+        }
+
+        // Gera um novo ID de protocolo
         String novoProtocolo = String.valueOf(protocoloGenerator.getAndIncrement());
 
-        // Cria FileInfo para esse protocolo e guarda no mapa
+        // Cria o FileInfo (arquivo temporário vazio) e guarda no mapa
         try {
             FileInfo fi = new FileInfo(novoProtocolo);
             protocolosMap.put(novoProtocolo, fi);
         } catch (IOException e) {
-            throw new ResponseStatusException(
-                    HttpStatus.INTERNAL_SERVER_ERROR,
-                    "Erro ao criar arquivo temporário para protocolo " + novoProtocolo
-            );
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR,
+                    "Erro criando arquivo temporário para protocolo " + novoProtocolo);
         }
 
-        // Monta XML de resposta
+        // Monta o XML de resposta
         StringBuilder sb = new StringBuilder();
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>")
           .append("<Resultado xmlns:atom=\"http://www.w3.org/2005/Atom\">")
@@ -125,27 +120,29 @@ import java.util.Base64;
     }
 
     /**
-     * PUT /staws/arquivos/{protocolo}/conteudo
-     * - Se header "Content-Range" estiver ausente, trata como upload completo (writeFull).
-     * - Se "Content-Range" presente, parseia e grava com writeChunk(inicio, dados).
-     * Se após gravação o upload estiver completo (fi.isUploadComplete() == true),
-     * envia o arquivo local ao S3 (putObject) e remove do mapa local (fi.cleanup()).
+     * 2) PUT /staws/arquivos/{protocolo}/conteudo
+     * Se Content-Range ausente   -> grava tudo (upload completo).
+     * Se Content-Range presente -> grava fragmento (upload em partes).
+     * Se, após gravação, o FileInfo indicar que o upload está completo,
+     * dispara o upload desse arquivo temporário ao S3 e limpa o arquivo local.
      */
     @PutMapping(
-    // Basic Auth validation
-    if (!isAuthorized(request)) {
-        HttpHeaders headers = new HttpHeaders();
-        headers.add("WWW-Authenticate", "Basic realm=\"STA Mock\"");
-        return new ResponseEntity<>(headers, HttpStatus.UNAUTHORIZED);
-    }
             path = "/{protocolo}/conteudo",
             consumes = MediaType.APPLICATION_OCTET_STREAM_VALUE
     )
     public ResponseEntity<Void> uploadConteudo(
             @PathVariable("protocolo") String protocolo,
             @RequestHeader(value = "Content-Range", required = false) String contentRange,
-            @RequestBody byte[] bodyBytes
+            @RequestBody byte[] bodyBytes,
+            HttpServletRequest request
     ) {
+        // Basic Auth
+        if (!isAuthorized(request)) {
+            HttpHeaders headers = new HttpHeaders();
+            headers.add("WWW-Authenticate", "Basic realm=\"STA Mock\"");
+            return new ResponseEntity<>(headers, HttpStatus.UNAUTHORIZED);
+        }
+
         FileInfo fi = protocolosMap.get(protocolo);
         if (fi == null) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
@@ -153,17 +150,17 @@ import java.util.Base64;
 
         try {
             if (contentRange == null) {
-                // Upload completo
+                // Upload completo: grava tudo de uma vez
                 fi.writeFull(bodyBytes);
             } else {
-                // Exemplo de Content-Range: "bytes 0-499/2000"
+                // Exemplo de Content-Range: "bytes 0-49999/200000"
                 String cep = contentRange.trim();
                 if (!cep.startsWith("bytes")) {
                     return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
                 }
-                String semBytes = cep.substring(6).trim(); // remove "bytes "
+                // Remove "bytes " e separa em {inicio}, {fim}, {tamanhoTotal}
+                String semBytes = cep.substring(6).trim();
                 String[] partes = semBytes.split("[\\-/]");
-                // partes = { inicio, fim, totalSize }
                 long inicio = Long.parseLong(partes[0]);
                 long fim = Long.parseLong(partes[1]);
                 long tamanhoTotal = Long.parseLong(partes[2]);
@@ -174,7 +171,7 @@ import java.util.Base64;
                 fi.writeChunk(inicio, bodyBytes);
             }
 
-            // Se o upload estiver completo após essa gravação, enviamos para o S3
+            // Se, agora, o FileInfo indicar upload concluído, envie ao S3
             if (fi.isUploadComplete()) {
                 uploadFileToS3(fi);
                 fi.cleanup();
@@ -188,39 +185,43 @@ import java.util.Base64;
     }
 
     /**
-     * Envia o arquivo local (FileInfo.getTempFile()) para o S3 usando putObject.
-     * A chave do objeto será igual ao número de protocolo (String).
+     * Faz o upload do arquivo local (que já está 100% completo) para o S3.
+     * Usa a chave “{protocolo}” (string) como objeto no bucket.
      */
     private void uploadFileToS3(FileInfo fi) {
         String key = fi.getProtocolo();
         File local = fi.getTempFile();
+
         try {
             PutObjectRequest por = new PutObjectRequest(bucketName, key, local);
             s3Client.putObject(por);
         } catch (AmazonS3Exception e) {
-            // Loga e segue; não lança para não interromper o fluxo principal
+            // Se der erro aqui, apenas logamos e seguimos
             e.printStackTrace();
         }
     }
 
     /**
-     * GET /staws/arquivos/{protocolo}/posicaoupload
-     * - Se o objeto já existe no S3 (headObject), retorna intervalo [0, tamanho-1] em XML.
-     * - Caso contrário, se houver upload em andamento (fileInfo em memória), retorna todos os intervals recebidos.
-     * - Se não houver nenhum dos dois, responde 404.
+     * 3) GET /staws/arquivos/{protocolo}/posicaoupload
+     * Retorna em XML os intervalos de bytes já recebidos para aquele protocolo.
+     * Se o arquivo já estiver no S3, retorna [0, tamanho-1].
      */
     @GetMapping(
-    // Basic Auth validation
-    if (!isAuthorized(request)) {
-        HttpHeaders headers = new HttpHeaders();
-        headers.add("WWW-Authenticate", "Basic realm=\"STA Mock\"");
-        return new ResponseEntity<>(headers, HttpStatus.UNAUTHORIZED);
-    }
             path = "/{protocolo}/posicaoupload",
             produces = MediaType.APPLICATION_XML_VALUE
     )
-    public ResponseEntity<String> getPosicaoUpload(@PathVariable("protocolo") String protocolo) {
-        // 1) Checa se já existe no S3
+    public ResponseEntity<String> getPosicaoUpload(
+            @PathVariable("protocolo") String protocolo,
+            HttpServletRequest request
+    ) {
+        // Basic Auth
+        if (!isAuthorized(request)) {
+            HttpHeaders headers = new HttpHeaders();
+            headers.add("WWW-Authenticate", "Basic realm=\"STA Mock\"");
+            return new ResponseEntity<>(headers, HttpStatus.UNAUTHORIZED);
+        }
+
+        // Primeiro verifique se já existe no S3
         if (objectExistsInS3(protocolo)) {
             try {
                 ObjectMetadata metadata = s3Client.getObjectMetadata(bucketName, protocolo);
@@ -235,17 +236,15 @@ import java.util.Base64;
                     .append("</Posicao>")
                     .append("</PosicaoUpload>");
 
-                return ResponseEntity
-                        .status(HttpStatus.OK)
+                return ResponseEntity.ok()
                         .contentType(MediaType.APPLICATION_XML)
                         .body(sbOk.toString());
-            } catch (AmazonS3Exception e) {
-                // Se for erro 404 (NoSuchKey) ou outro erro, retornamos false
+            } catch (AmazonServiceException e) {
                 return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
             }
         }
 
-        // 2) Se não estiver no S3, verifica se há FileInfo em memória (upload em andamento)
+        // Se não estiver no S3, verifica se há FileInfo em memória (upload em andamento)
         FileInfo fi = protocolosMap.get(protocolo);
         if (fi == null) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
@@ -270,32 +269,33 @@ import java.util.Base64;
     }
 
     /**
-     * GET /staws/arquivos/{protocolo}/conteudo
-     * - Se o objeto existir no S3:
-     *     • sem Range           → GET completo do S3 e devolve 200 OK.
-     *     • com Range           → GET do S3 com Range e devolve 206 Partial Content.
-     * - Se o objeto não existir no S3, mas houver FileInfo em memória:
-     *     • sem Range           → devolve tudo que já está gravado localmente (200 OK).
-     *     • com Range           → devolve apenas o trecho solicitado do local (206 Partial Content).
-     * - Se não houver nem S3 nem FileInfo, devolve 404.
+     * 4) GET /staws/arquivos/{protocolo}/conteudo
+     * - Se existir no S3:
+     *     • sem Range       → devolve tudo (200 OK)
+     *     • com Range       → devolve trecho (206 Partial Content)
+     * - Se não existir no S3, mas houver upload em andamento:
+     *     • sem Range       → devolve local (200 OK)
+     *     • com Range       → devolve trecho local (206 Partial Content)
      */
     @GetMapping(path = "/{protocolo}/conteudo")
-    // Basic Auth validation
-    if (!isAuthorized(request)) {
-        HttpHeaders headers = new HttpHeaders();
-        headers.add("WWW-Authenticate", "Basic realm=\"STA Mock\"");
-        return new ResponseEntity<>(headers, HttpStatus.UNAUTHORIZED);
-    }
     public ResponseEntity<byte[]> downloadConteudo(
             @PathVariable("protocolo") String protocolo,
-            @RequestHeader(value = "Range", required = false) String rangeHeader
+            @RequestHeader(value = "Range", required = false) String rangeHeader,
+            HttpServletRequest request
     ) {
-        // 1) Se existir no S3, serve de lá
+        // Basic Auth
+        if (!isAuthorized(request)) {
+            HttpHeaders headers = new HttpHeaders();
+            headers.add("WWW-Authenticate", "Basic realm=\"STA Mock\"");
+            return new ResponseEntity<>(headers, HttpStatus.UNAUTHORIZED);
+        }
+
+        // Se existir no S3, serve de lá
         if (objectExistsInS3(protocolo)) {
             return serveFromS3(protocolo, rangeHeader);
         }
 
-        // 2) Senão, vê se há upload em andamento
+        // Senão, verifica upload em andamento local
         FileInfo fi = protocolosMap.get(protocolo);
         if (fi == null) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
@@ -303,13 +303,10 @@ import java.util.Base64;
 
         try {
             if (rangeHeader != null && rangeHeader.startsWith("bytes=")) {
-                // Tratamento de Range local
                 String semBytes = rangeHeader.substring(6).trim();
                 String[] partes = semBytes.split("-");
                 long inicio = Long.parseLong(partes[0]);
-                long fim = partes.length > 1 
-                           ? Long.parseLong(partes[1]) 
-                           : fi.getTotalSize() - 1;
+                long fim = partes.length > 1 ? Long.parseLong(partes[1]) : fi.getTotalSize() - 1;
 
                 if (fi.getTotalSize() < 0) {
                     return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
@@ -322,13 +319,12 @@ import java.util.Base64;
                 HttpHeaders headers = new HttpHeaders();
                 headers.setContentType(MediaType.APPLICATION_OCTET_STREAM);
                 headers.setContentLength(dados.length);
-                headers.add(HttpHeaders.CONTENT_RANGE, 
-                            "bytes " + inicio + "-" + fim + "/" + fi.getTotalSize());
+                headers.add(HttpHeaders.CONTENT_RANGE, "bytes " + inicio + "-" + fim + "/" + fi.getTotalSize());
                 return new ResponseEntity<>(dados, headers, HttpStatus.PARTIAL_CONTENT);
             } else {
-                // Sem Range: devolve tudo já gravado localmente
                 if (fi.getTotalSize() < 0) {
-                    return ResponseEntity.status(HttpStatus.NOT_FOUND).build();}
+                    return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+                }
                 byte[] dados = fi.readFull();
                 HttpHeaders headers = new HttpHeaders();
                 headers.setContentType(MediaType.APPLICATION_OCTET_STREAM);
@@ -341,9 +337,75 @@ import java.util.Base64;
     }
 
     /**
+     * 5) GET /staws/arquivos?tipoConsulta=...&nivelDetalhe=...&dataHoraInicio=...&dataHoraFim=...
+     * Rota para consulta de protocolos via parâmetros.
+     * Retorna um XML com a lista de protocolos que atenderem aos filtros.
+     */
+    @GetMapping(produces = MediaType.APPLICATION_XML_VALUE)
+    public ResponseEntity<String> consultaProtocolos(
+            @RequestParam("tipoConsulta") String tipoConsulta,
+            @RequestParam("nivelDetalhe") String nivelDetalhe,
+            @RequestParam(value = "dataHoraInicio", required = false) String dataHoraInicio,
+            @RequestParam(value = "dataHoraFim", required = false) String dataHoraFim,
+            HttpServletRequest request
+    ) {
+        // Basic Auth
+        if (!isAuthorized(request)) {
+            HttpHeaders headers = new HttpHeaders();
+            headers.add("WWW-Authenticate", "Basic realm=\"STA Mock\"");
+            return new ResponseEntity<>(headers, HttpStatus.UNAUTHORIZED);
+        }
+
+        // Exemplo simplificado: retornamos todos os protocolos já gerados
+        // num XML fictício. Em produção, usaria banco ou outro repositório.
+        List<String> todosProtocolos = new ArrayList<>();
+        todosProtocolos.addAll(s3Client.listObjects(bucketName).getObjectSummaries().stream()
+                .map(S3ObjectSummary::getKey).toList());
+        todosProtocolos.addAll(protocolosMap.keySet());
+
+        // Monta XML de resposta conforme nível de detalhe
+        StringBuilder sb = new StringBuilder();
+        sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
+        sb.append("<ResultadoConsulta tipoConsulta=\"").append(tipoConsulta)
+          .append("\" nivelDetalhe=\"").append(nivelDetalhe).append("\">");
+
+        DateTimeFormatter fmt = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
+        String dhInicio = (dataHoraInicio != null) ? dataHoraInicio : "";
+        String dhFim = (dataHoraFim != null) ? dataHoraFim : "";
+
+        sb.append("<Parametros>");
+        sb.append("<TipoConsulta>").append(tipoConsulta).append("</TipoConsulta>");
+        sb.append("<NivelDetalhe>").append(nivelDetalhe).append("</NivelDetalhe>");
+        if (!dhInicio.isEmpty()) {
+            sb.append("<DataHoraInicio>").append(dhInicio).append("</DataHoraInicio>");
+        }
+        if (!dhFim.isEmpty()) {
+            sb.append("<DataHoraFim>").append(dhFim).append("</DataHoraFim>");
+        }
+        sb.append("</Parametros>");
+
+        sb.append("<Protocolos>");
+        for (String protocoloKey : todosProtocolos) {
+            sb.append("<Protocolo>");
+            sb.append("<Numero>").append(protocoloKey).append("</Numero>");
+            // DataHoraRegistro fictícia: agora
+            sb.append("<DataHoraRegistro>")
+              .append(LocalDateTime.now().format(fmt))
+              .append("</DataHoraRegistro>");
+            // Estado fictício
+            sb.append("<Estado>CONCLUIDO</Estado>");
+            sb.append("</Protocolo>");
+        }
+        sb.append("</Protocolos>");
+        sb.append("</ResultadoConsulta>");
+
+        return ResponseEntity.ok()
+                .contentType(MediaType.APPLICATION_XML)
+                .body(sb.toString());
+    }
+
+    /**
      * Verifica se existe um objeto com chave == protocolo no bucket S3.
-     * Faz getObjectMetadata: se não lançar exceção, retorna true; se lançar
-     * AmazonS3Exception indicando 404, retorna false.
      */
     private boolean objectExistsInS3(String protocolo) {
         try {
@@ -358,9 +420,7 @@ import java.util.Base64;
     }
 
     /**
-     * Serve o objeto diretamente do S3.
-     * - Sem Range: retorna 200 OK com todo o objeto.
-     * - Com Range: usa GetObjectRequest com Range e retorna 206 Partial Content.
+     * Serve o objeto diretamente do S3 (com suporte a Range).
      */
     private ResponseEntity<byte[]> serveFromS3(String protocolo, String rangeHeader) {
         try {
@@ -371,9 +431,7 @@ import java.util.Base64;
                 String semBytes = rangeHeader.substring(6).trim();
                 String[] partes = semBytes.split("-");
                 long inicio = Long.parseLong(partes[0]);
-                long fim = partes.length > 1 
-                           ? Long.parseLong(partes[1]) 
-                           : totalSize - 1;
+                long fim = partes.length > 1 ? Long.parseLong(partes[1]) : totalSize - 1;
 
                 if (inicio < 0 || fim >= totalSize || inicio > fim) {
                     return ResponseEntity.status(HttpStatus.REQUESTED_RANGE_NOT_SATISFIABLE).build();
@@ -387,8 +445,7 @@ import java.util.Base64;
                     HttpHeaders headers = new HttpHeaders();
                     headers.setContentType(MediaType.APPLICATION_OCTET_STREAM);
                     headers.setContentLength(dados.length);
-                    headers.add(HttpHeaders.CONTENT_RANGE,
-                            "bytes " + inicio + "-" + fim + "/" + totalSize);
+                    headers.add(HttpHeaders.CONTENT_RANGE, "bytes " + inicio + "-" + fim + "/" + totalSize);
                     return new ResponseEntity<>(dados, headers, HttpStatus.PARTIAL_CONTENT);
                 }
             } else {
@@ -409,12 +466,12 @@ import java.util.Base64;
     }
 
     /**
-     * Monta a URL base no formato "http://host:porta", para incluir no <atom:link> do POST.
+     * Helper: constroi a URL base (scheme://host:port).
      */
     private String getBaseUrl(HttpServletRequest request) {
-        String scheme = request.getScheme();       // http ou https
-        String serverName = request.getServerName(); // localhost ou host real
-        int serverPort = request.getServerPort();  // ex.: 8080
+        String scheme = request.getScheme();
+        String serverName = request.getServerName();
+        int serverPort = request.getServerPort();
         return scheme + "://" + serverName + ":" + serverPort;
     }
 }

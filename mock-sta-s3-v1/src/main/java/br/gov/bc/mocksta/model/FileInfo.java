@@ -73,7 +73,7 @@ public class FileInfo {
     }
 
     /**
-     * Retorna o sub-array de bytes entre [inicio, fim]. 
+     * Retorna o sub-array de bytes entre [inicio, fim].
      * Se ainda não tiver gravado até “fim”, preenche com zeros os bytes faltantes.
      */
     public synchronized byte[] readRange(long inicio, long fim) throws IOException {

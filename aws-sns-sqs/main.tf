@@ -1,5 +1,3 @@
-# main.tf
-
 terraform {
   required_providers {
     aws = {
@@ -32,18 +30,9 @@ resource "aws_sqs_queue" "fila2" {
   message_retention_seconds  = 1209600
 }
 
-# 3) Dados das filas para obter ARN
-data "aws_sqs_queue" "fila1_info" {
-  queue_url = aws_sqs_queue.fila1.id
-}
-
-data "aws_sqs_queue" "fila2_info" {
-  queue_url = aws_sqs_queue.fila2.id
-}
-
-# 4) Política que permite ao SNS publicar em cada fila
+# 3) Política que permite ao SNS publicar em cada fila
 resource "aws_sqs_queue_policy" "fila1_policy" {
-  queue_url = data.aws_sqs_queue.fila1_info.url
+  queue_url = aws_sqs_queue.fila1.id
 
   policy = jsonencode({
     Version   = "2012-10-17"
@@ -52,7 +41,7 @@ resource "aws_sqs_queue_policy" "fila1_policy" {
       Effect    = "Allow"
       Principal = { Service = "sns.amazonaws.com" }
       Action    = "sqs:SendMessage"
-      Resource  = data.aws_sqs_queue.fila1_info.arn
+      Resource  = aws_sqs_queue.fila1.arn
       Condition = {
         ArnEquals = {
           "aws:SourceArn" = aws_sns_topic.meu_topico.arn
@@ -63,7 +52,7 @@ resource "aws_sqs_queue_policy" "fila1_policy" {
 }
 
 resource "aws_sqs_queue_policy" "fila2_policy" {
-  queue_url = data.aws_sqs_queue.fila2_info.url
+  queue_url = aws_sqs_queue.fila2.id
 
   policy = jsonencode({
     Version   = "2012-10-17"
@@ -72,7 +61,7 @@ resource "aws_sqs_queue_policy" "fila2_policy" {
       Effect    = "Allow"
       Principal = { Service = "sns.amazonaws.com" }
       Action    = "sqs:SendMessage"
-      Resource  = data.aws_sqs_queue.fila2_info.arn
+      Resource  = aws_sqs_queue.fila2.arn
       Condition = {
         ArnEquals = {
           "aws:SourceArn" = aws_sns_topic.meu_topico.arn
@@ -82,20 +71,19 @@ resource "aws_sqs_queue_policy" "fila2_policy" {
   })
 }
 
-# 5) Subscriptions: inscreve cada fila no tópico SNS
+# 4) Subscriptions: inscreve cada fila no tópico SNS
 resource "aws_sns_topic_subscription" "sub_fila1" {
   topic_arn = aws_sns_topic.meu_topico.arn
   protocol  = "sqs"
-  endpoint  = data.aws_sqs_queue.fila1_info.arn
+  endpoint  = aws_sqs_queue.fila1.arn
 
-  # garante que a policy já esteja aplicada
   depends_on = [aws_sqs_queue_policy.fila1_policy]
 }
 
 resource "aws_sns_topic_subscription" "sub_fila2" {
   topic_arn = aws_sns_topic.meu_topico.arn
   protocol  = "sqs"
-  endpoint  = data.aws_sqs_queue.fila2_info.arn
+  endpoint  = aws_sqs_queue.fila2.arn
 
   depends_on = [aws_sqs_queue_policy.fila2_policy]
 }
